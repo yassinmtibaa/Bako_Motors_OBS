@@ -18,9 +18,8 @@ New ESP32 sensor frames (SA=0xAA):
   0x18D301AA  DC/DC 12V output voltage
   0x18D401AA  Motor temperature (winding + housing)
   0x18D501AA  MPPT heatsink temperature
-  0x18D601AA  DC/DC temperature
+  0x18D601AA  Cabin interior temperature + humidity
   0x18D701AA  Handbrake position
-  0x18D801AA  GNSS position + speed + fix
 
 REST API:
   GET  /          → dashboard (index.html)
@@ -31,7 +30,7 @@ REST API:
 Requirements: pip install fastapi uvicorn pyserial
 """
 
-import asyncio, json, os, re, socket, threading, time, copy
+import asyncio, json, os, pathlib, re, socket, threading, time, copy
 from collections import deque
 from typing import Optional
 
@@ -57,7 +56,8 @@ CONFIG_FILE = "mode_config.json"
 DEFAULT_CONFIG = {
     "mode": "serial",
     "serial": {"port": None, "baud": 115200},
-    "wifi":   {"esp_ip": "192.168.4.1", "esp_port": 9000},
+    "local":  {"listen_host": "0.0.0.0", "listen_port": 9000},
+    "cloud":  {"ws_url": "ws://62.169.24.172:8787/ws/cloud"},
 }
 
 def load_config() -> dict:
@@ -114,47 +114,31 @@ state = {
     "temps":          {},
     "avg_temp":       None,
 
-    # Extended sensors — mapped to dashboard keys
+    # ESP32 sensor readings (from SENSOR_JSON lines)
     "ext": {
-        "aux12v":    None,   # DC/DC 12V output voltage
-        "hv_iso_v":  None,   # solar panel voltage (mapped to HV reference)
-        "mppt_i1":   None,   # solar panel current (before MPPT)
-        "mppt_i2":   None,   # MPPT output current (after MPPT, before battery)
-        "bat_t2":    None,   # motor winding temperature
-        "mppt_t":    None,   # MPPT heatsink temperature
-        "dcdc_t":    None,   # DC/DC temperature
+        "aux12v":    None,   # 12V DC out
+        "hv_iso_v":  None,   # 72V DC in
+        "mppt_i1":   None,   # current in  (before MPPT)
+        "mppt_i2":   None,   # current out (after MPPT)
+        "bat_t1":    None,   # MPPT heatsink temp
+        "bat_t2":    None,   # DC/DC heatsink temp
+        "mppt_t":    None,   # motor temp
+        "dcdc_t":    None,   # 72V MPPT in
         "handbrake": None,
     },
     "ext_thresh": {"mppt_max_a": 22.0},
 
-    # New sensor detail fields (full resolution)
-    "pack_current_a":   None,   # pack current A (from 0x18FF28F4)
-    "solar_v":          None,   # solar panel voltage V
-    "solar_voc":        None,   # open-circuit voltage V
-    "solar_i_raw":      None,   # solar current A
-    "solar_i_avg":      None,   # 5-cycle moving average A
-    "mppt_out_i":       None,   # MPPT output current A
-    "mppt_mode":        None,   # 0=off 1=tracking 2=CV 3=float
-    "mppt_efficiency":  None,   # % 0-100
-    "dcdc_v":           None,   # DC/DC 12V output voltage V
-    "dcdc_i":           None,   # DC/DC output current A (None = not fitted)
-    "dcdc_status":      None,
-    "motor_t_winding":  None,   # motor winding temp °C
-    "motor_t_housing":  None,   # motor housing temp °C (None = not fitted)
-    "motor_t_status":   None,
-    "mppt_t_raw":       None,   # MPPT heatsink temp °C
-    "mppt_t_status":    None,
-    "dcdc_t_raw":       None,   # DC/DC temperature °C  (0x18D601AA)
-    "dcdc_t_status":    None,
-    "handbrake_raw":    None,   # 0=released 1=engaged 0xFF=fault
-    "hb_debounce":      None,   # 0=stable 1=transitioning
-
-    # GNSS
-    "gnss": {"lat": None, "lon": None, "alt": None, "speed": None, "fix": 0},
-
-    # Scenario info (from simulator firmware)
-    "scenario_name":        "—",
-    "scenario_countdown_s": None,
+    # Raw sensor values
+    "v12_dc_out":    None,
+    "v12_handbrake": None,
+    "v72_dc_in":     None,
+    "v72_mppt_in":   None,
+    "current_in":    None,
+    "current_out":   None,
+    "temp_mppt":     None,
+    "temp_dcdc":     None,
+    "temp_motor":    None,
+    "handbrake_raw": None,
 
     # Thresholds for UI colour coding
     "thresh": {
@@ -180,10 +164,6 @@ state = {
     "port":        "—",
     "frame_count": 0,
     "last_error":  "",
-
-    # Latest JSON push snapshot (populated every 2 minutes from firmware)
-    "latest_json_push":    None,
-    "latest_json_push_ts": None,
 }
 
 # SOC calibration constants (BAKO doc section 5.2)
@@ -191,9 +171,6 @@ SOC_CAR_TOP_MV = 3387   # 100% SOC cell voltage
 CELL_UV_MV     = 2500   # 0% SOC cell voltage
 CAP_RATED_AH   = 50.0
 CAP_ACTUAL_AH  = 44.7
-
-# MPPT mode labels
-MPPT_MODE_LABELS = {0: "off", 1: "tracking", 2: "CV_charge", 3: "float"}
 
 log_buffer  = deque(maxlen=300)
 frame_count = 0
@@ -250,12 +227,20 @@ class ReaderManager:
                 daemon=True,
             )
             self.thread.start()
-        elif mode == "wifi":
-            ip   = self.config["wifi"]["esp_ip"]
-            port = self.config["wifi"]["esp_port"]
+        elif mode == "local":
+            host = self.config["local"]["listen_host"]
+            port = self.config["local"]["listen_port"]
             self.thread = threading.Thread(
-                target=wifi_reader_loop,
-                args=(ip, port, self.stop_event),
+                target=local_tcp_server_loop,
+                args=(host, port, self.stop_event),
+                daemon=True,
+            )
+            self.thread.start()
+        elif mode == "cloud":
+            ws_url = self.config["cloud"].get("ws_url", DEFAULT_CONFIG["cloud"]["ws_url"])
+            self.thread = threading.Thread(
+                target=cloud_reader_loop,
+                args=(ws_url, self.stop_event),
                 daemon=True,
             )
             self.thread.start()
@@ -381,7 +366,6 @@ def parse_can(id_hex: int, d: bytes) -> None:
 
         current_raw = u16le(d, 2)
         pack_current = round((current_raw - 5000) * 0.1, 1)   # A, + = discharge
-        state["pack_current_a"] = pack_current
 
         voltage_raw = u16le(d, 4)
         pack_voltage = round(voltage_raw * 0.1, 1)             # V
@@ -441,174 +425,123 @@ def parse_can(id_hex: int, d: bytes) -> None:
         state["chg_i_req"] = round(chg_i_raw * 0.1, 1)
         return
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  ESP32 Sensor Gateway frames (SA=0xAA)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # ── 0x18D001AA — Solar panel current (before MPPT) ───────────────────────
-    # Bytes 1-2: LE uint16 raw current,  0.1 A/bit
-    # Bytes 3-4: LE uint16 fiGPRSred avg, 0.1 A/bit
-    # Byte  5  : sensor status
-    if id_hex == 0x18D001AA and len(d) >= 5:
-        raw_i = round(u16le(d, 0) * 0.1, 2)
-        avg_i = round(u16le(d, 2) * 0.1, 2)
-        state["solar_i_raw"]     = raw_i
-        state["solar_i_avg"]     = avg_i
-        state["ext"]["mppt_i1"]  = raw_i   # maps to dashboard solar-in current
-        return
-
-    # ── 0x18D101AA — Solar panel voltage (before MPPT) ───────────────────────
-    # Bytes 1-2: LE uint16 panel voltage,    0.1 V/bit
-    # Bytes 3-4: LE uint16 open-circuit Voc, 0.1 V/bit
-    # Byte  5  : sensor status
-    if id_hex == 0x18D101AA and len(d) >= 5:
-        v_panel = round(u16le(d, 0) * 0.1, 2)
-        v_oc    = round(u16le(d, 2) * 0.1, 2)
-        state["solar_v"]          = v_panel
-        state["solar_voc"]        = v_oc
-        state["ext"]["hv_iso_v"]  = v_panel  # maps to HV voltage reference
-        return
-
-    # ── 0x18D201AA — MPPT output current + mode + efficiency ─────────────────
-    # Bytes 1-2: LE uint16 output current, 0.1 A/bit
-    # Byte  3  : MPPT mode (0=off 1=track 2=CV 3=float)
-    # Byte  4  : efficiency % (0-100)
-    # Byte  5  : sensor status
-    if id_hex == 0x18D201AA and len(d) >= 5:
-        out_i    = round(u16le(d, 0) * 0.1, 2)
-        mode_raw = d[2]
-        eff      = d[3]
-        state["mppt_out_i"]       = out_i
-        state["mppt_mode"]        = MPPT_MODE_LABELS.get(mode_raw, str(mode_raw))
-        state["mppt_efficiency"]  = eff
-        state["ext"]["mppt_i2"]   = out_i  # maps to MPPT output current slot
-        return
-
-    # ── 0x18D301AA — DC/DC 12V output voltage ────────────────────────────────
-    # Bytes 1-2: LE uint16 output voltage, 0.01 V/bit
-    # Bytes 3-4: LE uint16 output current, 0.1 A/bit (0xFFFF = not fitted)
-    # Byte  5  : DC/DC status
-    if id_hex == 0x18D301AA and len(d) >= 5:
-        v_raw = u16le(d, 0)
-        i_raw = u16le(d, 2)
-        v = round(v_raw * 0.01, 3)
-        i = None if i_raw == 0xFFFF else round(i_raw * 0.1, 2)
-        state["dcdc_v"]          = v
-        state["dcdc_i"]          = i
-        state["dcdc_status"]     = d[4]
-        state["ext"]["aux12v"]   = round(v, 2)  # maps to 12V aux voltage
-        return
-
-    # ── 0x18D401AA — Motor temperature ───────────────────────────────────────
-    # Byte 1: motor winding temp  (uint8, offset -40, 0xFF=NC)
-    # Byte 2: motor housing temp  (uint8, offset -40, 0xFF=NC)
-    # Byte 3: sensor status
-    if id_hex == 0x18D401AA and len(d) >= 3:
-        t_winding = decode_temp(d[0])
-        t_housing = decode_temp(d[1])
-        status    = d[2]
-        state["motor_t_winding"]  = t_winding
-        state["motor_t_housing"]  = t_housing
-        state["motor_t_status"]   = status
-        state["ext"]["bat_t2"]    = t_winding  # maps to motor temp display slot
-        return
-
-    # ── 0x18D501AA — MPPT heatsink temperature ───────────────────────────────
-    # Byte 1: MPPT heatsink temp (uint8, offset -40)
-    # Byte 2: sensor status
-    if id_hex == 0x18D501AA and len(d) >= 2:
-        t = decode_temp(d[0])
-        state["mppt_t_raw"]     = t
-        state["mppt_t_status"]  = d[1]
-        state["ext"]["mppt_t"]  = t   # maps to MPPT heatsink display slot
-        return
-
-    # ── 0x18D601AA — DC/DC temperature ──────────────────────────────────────
-    # Byte 1: DC/DC temp (uint8, offset -40)
-    # Byte 2: sensor status
-    if id_hex == 0x18D601AA and len(d) >= 2:
-        t_dcdc = decode_temp(d[0])
-        state["dcdc_t_raw"]    = t_dcdc
-        state["dcdc_t_status"] = d[1]
-        state["ext"]["dcdc_t"] = t_dcdc
-        return
-
-    # ── 0x18D701AA — Handbrake position ──────────────────────────────────────
-    # Byte 1: 0x00=released 0x01=engaged 0xFF=fault
-    # Byte 2: debounce state (0=stable 1=transitioning)
-    if id_hex == 0x18D701AA and len(d) >= 2:
-        hb_raw = d[0]
-        hb     = None if hb_raw == 0xFF else int(hb_raw)
-        state["handbrake_raw"]     = hb
-        state["hb_debounce"]       = int(d[1])
-        state["ext"]["handbrake"]  = hb
-        return
-
-    # ── 0x18D801AA — GNSS position + speed + fix ─────────────────────────────
-    # Bytes 0-3: latitude  LE int32, scale 1e-7 deg
-    # Bytes 4-5: speed_kmh LE uint16, scale 0.1 km/h
-    # Byte 6: fix (0=no fix, 1=fix)
-    if id_hex == 0x18D801AA and len(d) >= 7:
-        lat_raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
-        if lat_raw >= 0x80000000:      # sign-extend int32
-            lat_raw -= 0x100000000
-        lat   = round(lat_raw * 1e-7, 7)
-        speed = round(u16le(d, 4) * 0.1, 1)
-        fix   = int(d[6])
-        state["gnss"]["lat"]   = lat
-        state["gnss"]["speed"] = speed
-        state["gnss"]["fix"]   = fix
-        return
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SENSOR text-line parser (fallback / supplementary)
+#  ESP32 JSON sensor parser
 # ─────────────────────────────────────────────────────────────────────────────
-_NUM  = re.compile(r'(\w+)=([-\d.]+)')
-_NAME = re.compile(r'scenario_name=([A-Z_]+)')
-_CD   = re.compile(r'scenario_countdown=(\d+)')
+def parse_sensor_json(line: str) -> None:
+    """Parse SENSOR_JSON:{...} lines emitted by the ESP32 firmware."""
+    try:
+        data = json.loads(line[len("SENSOR_JSON:"):])
+    except Exception:
+        return
 
-def parse_sensor(line: str) -> None:
-    kv = {m.group(1): float(m.group(2)) for m in _NUM.finditer(line)}
-    def f(k, dec=2): return round(kv[k], dec) if k in kv else None
+    def get(k):
+        return data.get(k)
 
-    if 'solar_v'     in kv:
-        state["solar_v"]          = f("solar_v")
-        state["ext"]["hv_iso_v"]  = f("solar_v")
-    if 'solar_i_in'  in kv:
-        state["solar_i_raw"]      = f("solar_i_in")
-        state["ext"]["mppt_i1"]   = f("solar_i_in")
-    if 'solar_i_out' in kv:
-        state["mppt_out_i"]       = f("solar_i_out")
-        state["ext"]["mppt_i2"]   = f("solar_i_out")
-    if 'aux12v'      in kv:
-        state["ext"]["aux12v"]    = f("aux12v")
-        state["dcdc_v"]           = f("aux12v")
-    if 'motor_t'     in kv:
-        state["motor_t_winding"]  = f("motor_t", 1)
-        state["ext"]["bat_t2"]    = f("motor_t", 1)
-    if 'mppt_t'      in kv:
-        state["mppt_t_raw"]       = f("mppt_t", 1)
-        state["ext"]["mppt_t"]    = f("mppt_t", 1)
-    if 'dcdc_t'      in kv:
-        state["dcdc_t_raw"]       = f("dcdc_t", 1)
-        state["ext"]["dcdc_t"]    = f("dcdc_t", 1)
-    if 'handbrake'   in kv:
-        state["handbrake_raw"]    = int(kv["handbrake"])
-        state["ext"]["handbrake"] = int(kv["handbrake"])
-    if 'hv64v'       in kv:
-        state["ext"]["hv_iso_v"]  = f("hv64v")
+    state["v12_dc_out"]    = get("v12_dc_out")
+    state["v12_handbrake"] = get("v12_handbrake")
+    state["v72_dc_in"]     = get("v72_dc_in")
+    state["v72_mppt_in"]   = get("v72_mppt_in")
+    state["current_in"]    = get("current_in")
+    state["current_out"]   = get("current_out")
+    state["temp_mppt"]     = get("temp_mppt")
+    state["temp_dcdc"]     = get("temp_dcdc")
+    state["temp_motor"]    = get("temp_motor")
+    state["handbrake_raw"] = get("handbrake")
 
-    if 'gnss_lat'    in kv: state["gnss"]["lat"]   = round(kv["gnss_lat"],   7)
-    if 'gnss_lon'    in kv: state["gnss"]["lon"]   = round(kv["gnss_lon"],   7)
-    if 'gnss_alt'    in kv: state["gnss"]["alt"]   = round(kv["gnss_alt"],   1)
-    if 'gnss_speed'  in kv: state["gnss"]["speed"] = round(kv["gnss_speed"], 1)
-    if 'gnss_fix'    in kv: state["gnss"]["fix"]   = int(kv["gnss_fix"])
+    # Map into the ext dict that the dashboard reads
+    state["ext"]["aux12v"]    = get("v12_dc_out")    # 12V DC out
+    state["ext"]["hv_iso_v"]  = get("v72_dc_in")     # 72V DC in
+    state["ext"]["mppt_i1"]   = get("current_in")    # current in
+    state["ext"]["mppt_i2"]   = get("current_out")   # current out
+    state["ext"]["bat_t1"]    = get("temp_mppt")     # MPPT heatsink temp
+    state["ext"]["bat_t2"]    = get("temp_dcdc")     # DC/DC heatsink temp
+    state["ext"]["mppt_t"]    = get("temp_motor")    # motor temp
+    state["ext"]["dcdc_t"]    = get("v72_mppt_in")   # 72V MPPT in
+    state["ext"]["handbrake"] = get("handbrake")
 
-    m = _NAME.search(line)
-    if m: state["scenario_name"] = m.group(1).replace('_', ' ')
-    m = _CD.search(line)
-    if m: state["scenario_countdown_s"] = int(m.group(1))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cloud VPS JSON parser  — schema_version 2.0.0 posted by SIM800L
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_cloud_json(data: dict) -> None:
+    """Map the structured firmware JSON snapshot (schema 2.0.0) into state.
+    Caller must hold state_lock."""
+    bat   = data.get("battery",      {})
+    temps = data.get("temperatures", {})
+    solar = data.get("solar",        {})
+    dcdc  = data.get("dc_dc",        {})
+    veh   = data.get("vehicle",      {})
+
+    # ── battery / BMS ────────────────────────────────────────────────────────
+    if bat.get("pack_v")    is not None: state["pack_v"]      = bat["pack_v"]
+    if bat.get("soc")       is not None: state["soc"]         = bat["soc"]
+    if bat.get("soc_bms")   is not None: state["soc_bms"]     = bat["soc_bms"]
+    if bat.get("max_disch_a") is not None: state["disch_i_lim"] = bat["max_disch_a"]
+    if bat.get("cell_count") is not None: state["cell_count"] = bat["cell_count"]
+    if bat.get("cell_avg_mv") is not None: state["cell_avg_mv"] = bat["cell_avg_mv"]
+    if bat.get("cell_min_mv") is not None: state["cell_min_mv"] = bat["cell_min_mv"]
+    if bat.get("cell_max_mv") is not None: state["cell_max_mv"] = bat["cell_max_mv"]
+    if bat.get("cell_spread_mv") is not None: state["cell_spread_mv"] = bat["cell_spread_mv"]
+
+    # Individual cell voltages → cells dict
+    for i, mv in enumerate(bat.get("cells_voltages", []), start=1):
+        if mv and mv > 0:
+            state["cells"][i] = {"mv": mv, "status": cell_status(mv)}
+
+    # Charge limit
+    chg = bat.get("charge_limit", {})
+    if chg.get("max_charge_a") is not None: state["chg_i_req"] = chg["max_charge_a"]
+
+    # Fault / error
+    st = bat.get("status", {})
+    if st.get("fault_level") is not None: state["fault_level"] = st["fault_level"]
+    if st.get("error_code")  is not None: state["error_code"]  = st["error_code"]
+
+    # Derived
+    soc = state.get("soc")
+    if soc is not None:
+        state["remaining_ah"] = round(CAP_ACTUAL_AH * soc / 100.0, 1)
+    state["soh"] = round(CAP_ACTUAL_AH / CAP_RATED_AH * 100.0, 1)
+
+    # ── temperatures ─────────────────────────────────────────────────────────
+    if temps.get("battery_avg_c") is not None: state["avg_temp"] = temps["battery_avg_c"]
+    for i, t in enumerate(temps.get("battery_temps_c", []), start=1):
+        if t is not None:
+            state["temps"][i] = t
+
+    # ── external sensors (solar / dc_dc / vehicle) ───────────────────────────
+    pre  = solar.get("pre_mppt",  {})
+    post = solar.get("post_mppt", {})
+    dc_in  = dcdc.get("input_64v",  {})
+    dc_out = dcdc.get("output_12v", {})
+
+    state["v72_mppt_in"]   = pre.get("voltage_v")
+    state["current_in"]    = pre.get("current_a")
+    state["current_out"]   = post.get("current_a")
+    state["v72_dc_in"]     = dc_in.get("voltage_v")
+    state["v12_dc_out"]    = dc_out.get("voltage_v")
+    state["temp_mppt"]     = temps.get("mppt_temp_c")
+    state["temp_dcdc"]     = temps.get("dcdc_temp_c")
+    state["temp_motor"]    = temps.get("motor_temp_c")
+    state["handbrake_raw"] = int(veh.get("handbrake", False))
+
+    # Map to ext dict (dashboard reads from here)
+    state["ext"]["aux12v"]    = dc_out.get("voltage_v")     # 12V DC out
+    state["ext"]["hv_iso_v"]  = dc_in.get("voltage_v")      # 72V bus
+    state["ext"]["mppt_i1"]   = pre.get("current_a")        # solar current before MPPT
+    state["ext"]["mppt_i2"]   = post.get("current_a")       # MPPT output current
+    state["ext"]["bat_t1"]    = temps.get("mppt_temp_c")    # MPPT heatsink
+    state["ext"]["bat_t2"]    = temps.get("dcdc_temp_c")    # DC/DC heatsink
+    state["ext"]["mppt_t"]    = temps.get("motor_temp_c")   # motor temp
+    state["ext"]["dcdc_t"]    = pre.get("voltage_v")        # 72V MPPT in
+    state["ext"]["handbrake"] = veh.get("handbrake")
+
+    state["frame_count"] = state.get("frame_count", 0) + 1
+    log_buffer.append(f"[cloud] seq={data.get('seq','?')} soc={state.get('soc')}%")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -639,21 +572,8 @@ def process_line(line: str) -> None:
         id_hex = int(m.group(2), 16)
         data   = bytes(int(x, 16) for x in m.group(4).split())
         parse_can(id_hex, data)
-    elif line.startswith("JSON_PUSH:"):
-        # Store the raw JSON payload for the /api/latest_push REST endpoint
-        raw_json = line[len("JSON_PUSH:"):].strip()
-        try:
-            parsed = json.loads(raw_json)
-            state["latest_json_push"] = parsed
-            state["latest_json_push_ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-        except Exception:
-            pass   # malformed JSON — ignore
-    elif line.startswith("SENSOR:"):
-        parse_sensor(line)
-    elif line.startswith("[SIM]"):
-        m2 = re.search(r'SCENARIO:\s+(.+)', line)
-        if m2:
-            state["scenario_name"] = m2.group(1).strip()
+    elif line.startswith("SENSOR_JSON:"):
+        parse_sensor_json(line)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -721,24 +641,42 @@ def serial_reader_loop(port_arg: Optional[str], baud: int, stop_event: threading
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  WiFi reader
+#  Local TCP server — listens for ESP32 to connect over LAN
 # ─────────────────────────────────────────────────────────────────────────────
-def wifi_reader_loop(esp_ip: str, esp_port: int, stop_event: threading.Event):
-    print(f"[WiFi] Will connect to ESP32 at {esp_ip}:{esp_port}")
+def local_tcp_server_loop(host: str, port: int, stop_event: threading.Event):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((host, port))
+        srv.listen(2)
+    except OSError as e:
+        with state_lock:
+            state["last_error"] = f"Local TCP bind failed: {e}"
+        print(f"[Local] Bind error: {e}")
+        return
+    srv.settimeout(1.0)
+    with state_lock:
+        state["connected"]  = False
+        state["mode"]       = "local"
+        state["port"]       = f"listening :{port}"
+        state["last_error"] = ""
+    print(f"[Local] Listening for ESP32 on {host}:{port}")
     while not stop_event.is_set():
-        conn = None
         try:
-            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            conn.settimeout(4.0)
-            conn.connect((esp_ip, esp_port))
-            conn.settimeout(1.0)
-            with state_lock:
-                state["connected"]  = True
-                state["mode"]       = "wifi"
-                state["port"]       = f"{esp_ip}:{esp_port}"
-                state["last_error"] = ""
-            print(f"[WiFi] Connected to {esp_ip}:{esp_port}")
-            buf = b""
+            conn, addr = srv.accept()
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"[Local] Accept error: {e}")
+            break
+        print(f"[Local] ESP32 connected from {addr[0]}:{addr[1]}")
+        with state_lock:
+            state["connected"]  = True
+            state["port"]       = f"esp32@{addr[0]}"
+            state["last_error"] = ""
+        conn.settimeout(1.0)
+        buf = b""
+        try:
             while not stop_event.is_set():
                 try:
                     chunk = conn.recv(4096)
@@ -754,26 +692,81 @@ def wifi_reader_loop(esp_ip: str, esp_port: int, stop_event: threading.Event):
                         continue
                     with state_lock:
                         process_line(line)
-        except (OSError, socket.timeout) as e:
-            with state_lock:
-                state["connected"]  = False
-                state["last_error"] = f"WiFi: {e}"
-            print(f"[WiFi] {e} — retry in 2s")
-            if stop_event.wait(2.0): break
+        except Exception as e:
+            print(f"[Local] Connection error: {e}")
+        finally:
+            conn.close()
+        with state_lock:
+            state["connected"] = False
+            state["port"]      = f"listening :{port}"
+        print("[Local] ESP32 disconnected — waiting for new connection")
+    srv.close()
+    with state_lock:
+        state["connected"] = False
+    print("[Local] TCP server stopped")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cloud VPS WebSocket reader — connects to ws://62.169.24.172:8787/ws/cloud
+# ─────────────────────────────────────────────────────────────────────────────
+async def _cloud_ws_reader(ws_url: str, stop_event: threading.Event) -> None:
+    try:
+        import websockets
+    except ImportError:
+        with state_lock:
+            state["last_error"] = "websockets package not installed (pip install websockets)"
+        print("[Cloud] ERROR: websockets not installed")
+        return
+
+    print(f"[Cloud] Starting reader → {ws_url}")
+    while not stop_event.is_set():
+        try:
+            async with websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5,
+            ) as ws:
+                with state_lock:
+                    state["connected"]  = True
+                    state["mode"]       = "cloud"
+                    state["port"]       = ws_url
+                    state["last_error"] = ""
+                print(f"[Cloud] Connected to {ws_url}")
+
+                while not stop_event.is_set():
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        # No message in 30 s — VPS may be idle, keep waiting
+                        continue
+                    try:
+                        data = json.loads(msg)
+                    except json.JSONDecodeError:
+                        continue
+                    with state_lock:
+                        parse_cloud_json(data)
+
         except Exception as e:
             with state_lock:
                 state["connected"]  = False
-                state["last_error"] = f"WiFi: {e}"
-            print(f"[WiFi] {e}")
-            if stop_event.wait(2.0): break
-        finally:
-            try:
-                if conn: conn.close()
-            except Exception:
-                pass
+                state["last_error"] = f"Cloud WS: {e}"
+            print(f"[Cloud] {e} — reconnecting in 5 s")
+            # Non-blocking sleep that respects stop_event
+            for _ in range(50):
+                if stop_event.is_set():
+                    break
+                await asyncio.sleep(0.1)
+
     with state_lock:
         state["connected"] = False
-    print("[WiFi] Reader stopped")
+    print("[Cloud] Reader stopped")
+
+
+def cloud_reader_loop(ws_url: str, stop_event: threading.Event) -> None:
+    """Thread target — runs its own asyncio event loop so it doesn't conflict
+    with uvicorn's loop on the main thread."""
+    asyncio.run(_cloud_ws_reader(ws_url, stop_event))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -786,11 +779,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 class ModeRequest(BaseModel):
     mode:   Optional[str]  = None
     serial: Optional[dict] = None
-    wifi:   Optional[dict] = None
+    wifi:   Optional[dict] = None   # kept for backward compat, maps to local
+    local:  Optional[dict] = None
+    cloud:  Optional[dict] = None
 
 @app.get("/")
 async def root():
-    return FileResponse("frontend/index.html")
+    return FileResponse(str(pathlib.Path(__file__).parent / "index.html"))
 
 @app.get("/api/mode")
 async def get_mode():
@@ -803,120 +798,39 @@ async def get_mode():
 async def set_mode(req: ModeRequest):
     new_cfg = {}
     if req.mode is not None:
-        if req.mode not in ("serial", "wifi", "off"):
-            return JSONResponse({"error": "mode must be serial|wifi|off"},
+        if req.mode not in ("serial", "local", "cloud", "off"):
+            return JSONResponse({"error": "mode must be serial|local|cloud|off"},
                                 status_code=400)
         new_cfg["mode"] = req.mode
     if req.serial is not None:
         new_cfg["serial"] = req.serial
-    if req.wifi is not None:
-        new_cfg["wifi"] = req.wifi
+    if req.local is not None:
+        new_cfg["local"] = req.local
+    elif req.wifi is not None:
+        new_cfg["local"] = req.wifi   # backward compat
+    if req.cloud is not None:
+        new_cfg["cloud"] = req.cloud
     cfg = reader_mgr.switch_to(new_cfg)
     cfg["available_ports"]  = list_serial_ports()
     cfg["serial_available"] = SERIAL_AVAILABLE
     return JSONResponse(cfg)
 
-@app.get("/api/latest_push")
-async def get_latest_push():
-    """Return the most recent JSON snapshot pushed by the firmware (every 2 min)."""
-    with state_lock:
-        payload = copy.deepcopy(state.get("latest_json_push"))
-        ts      = state.get("latest_json_push_ts")
-    if payload is None:
-        return JSONResponse({"error": "No JSON push received yet"}, status_code=404)
-    return JSONResponse({"received_at": ts, "data": payload})
-
 INGEST_API_KEY = os.environ.get("BMS_API_KEY", "bako-bms-2024")
-
-def _cell_status(mv: int, thresh: dict) -> str:
-    if mv is None:              return "nc"
-    if mv >= thresh["cell_ov"]: return "ov"
-    if mv <= thresh["cell_uv"]: return "uv"
-    if mv >= thresh["cell_full"]: return "full"
-    if mv >= thresh["cell_bal"]: return "ok"
-    return "low"
-
-@app.post("/hello")
-async def hello(request: Request):
-    body = await request.body()
-    text = body.decode("utf-8", errors="replace").strip()
-    print(f"[HELLO] {text}", flush=True)
-    return JSONResponse({"reply": f"Server received: {text}"})
-
 
 @app.post("/api/ingest")
 async def ingest(request: Request):
-    key = request.headers.get("X-Api-Key", "")
-    if key != INGEST_API_KEY:
+    if request.headers.get("X-Api-Key", "") != INGEST_API_KEY:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
-        raw = await request.body()
-        print(f"[INGEST] body_len={len(raw)} first_bytes={raw[:40]!r}", flush=True)
-        payload = json.loads(raw)
-    except Exception as e:
-        raw_preview = raw[:120] if 'raw' in dir() else b''
-        print(f"[INGEST] bad json: {e!r}  body_preview={raw_preview!r}", flush=True)
+        data = await request.json()
+    except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
-
-    bat   = payload.get("battery", {})
-    temps = payload.get("temperatures", {})
-
     with state_lock:
-        thresh = state["thresh"]
-
-        state["pack_v"]         = bat.get("pack_v")
-        state["pack_current_a"] = bat.get("pack_current_a")
-        state["soc"]            = bat.get("soc")
-        state["soc_bms"]        = bat.get("soc_bms")
-        state["cell_count"]     = bat.get("cell_count", 0)
-        state["cell_avg_mv"]    = bat.get("cell_avg_mv")
-        state["cell_min_mv"]    = bat.get("cell_min_mv")
-        state["cell_max_mv"]    = bat.get("cell_max_mv")
-        state["cell_spread_mv"] = bat.get("cell_spread_mv")
-        state["disch_i_lim"]    = bat.get("max_disch_a")
-        state["fault_level"]    = payload.get("fault_level", 0)
-        state["error_code"]     = payload.get("error_code", 0)
-        state["frame_count"]    = payload.get("frame_count", 0)
-        state["connected"]      = payload.get("connected", True)
-        state["mode"]           = "cloud"
-        state["port"]           = payload.get("device_id", "replay")
-
-        charger = bat.get("charger", {})
-        state["chg_i_req"] = charger.get("max_charge_a")
-
-        # cells_arr format: [None, {mv, status}, {mv, status}, ...]
-        # position 0 is a null placeholder; positions 1-19 are the actual cells
-        cells_arr = bat.get("cells", [])
-        cells = {}
-        for idx, entry in enumerate(cells_arr):
-            if idx == 0 or entry is None:
-                continue
-            if isinstance(entry, dict):
-                mv = entry.get("mv")
-            else:
-                mv = entry  # plain integer fallback
-            if mv is not None:
-                cells[idx] = {"mv": mv, "status": _cell_status(mv, thresh)}
-        state["cells"] = cells
-
-        # battery_cells format: [None, temp1, temp2, ...]
-        # position 0 is a null placeholder; positions 1-4 are probe readings
-        bc = temps.get("battery_cells", [])
-        state["temps"] = {}
-        for idx, v in enumerate(bc):
-            if idx == 0 or v is None:
-                continue
-            state["temps"][idx] = v
-        state["avg_temp"] = temps.get("battery_avg_c")
-
-        state["latest_json_push"]    = payload
-        state["latest_json_push_ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-
-        log_buffer.append(f"[CLOUD] ingest seq={payload.get('seq','?')} "
-                          f"soc={state['soc']} pack_v={state['pack_v']}")
-
-    return JSONResponse({"ok": True})
-
+        parse_cloud_json(data)
+        state["connected"] = True
+        state["mode"]      = "cloud"
+        state["port"]      = f"GPRS seq={data.get('seq', '?')}"
+    return JSONResponse({"status": "ok", "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
@@ -939,7 +853,7 @@ def main():
     import argparse
     p = argparse.ArgumentParser(description="BAKO SMU Combined Server")
     p.add_argument("--host",     default="0.0.0.0")
-    p.add_argument("--web-port", default=8787, type=int, dest="web_port")
+    p.add_argument("--web-port", default=8765, type=int, dest="web_port")
     args = p.parse_args()
 
     reader_mgr.start()
@@ -951,14 +865,19 @@ def main():
     if cfg["mode"] == "serial":
         print(f"  Serial port : {cfg['serial']['port'] or 'auto-detect'}"
               f"  @ {cfg['serial']['baud']} baud")
-    elif cfg["mode"] == "wifi":
-        print(f"  ESP32 WiFi  : {cfg['wifi']['esp_ip']}:{cfg['wifi']['esp_port']}")
-        print(f"  (Connect your PC to the 'BAKO_SMU' WiFi network first)")
+    elif cfg["mode"] == "local":
+        port = cfg.get("local", {}).get("listen_port", 9000)
+        print(f"  Local TCP   : listening on :{port} (ESP32 connects to this machine)")
+    elif cfg["mode"] == "cloud":
+        print(f"  Cloud mode  : dashboard connects to VPS directly")
     print(f"  Dashboard   : http://localhost:{args.web_port}")
     print("  Ctrl+C to stop")
     print("=" * 64)
+    print(f"  >> Open http://localhost:{args.web_port} in your browser <<")
+    print("  (terminal will appear frozen — that is normal, server is running)")
+    print()
 
-    uvicorn.run(app, host=args.host, port=args.web_port, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.web_port, log_level="info")
 
 
 if __name__ == "__main__":
