@@ -12,22 +12,22 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
     :root {
-      --bg: #060a0d;
-      --surface: #0b1117;
-      --card: #0f1820;
-      --border: #0f1214;
-      --border2: #1e3045;
-      --accent: #9bc8b2;
-      --accent2: #0099bb;
-      --green: #00ff88;
-      --yellow: #ffcc00;
-      --orange: #ff7722;
-      --red: #d52943;
-      --blue: #29b6f6;
-      --purple: #9c6fde;
-      --dim: #2a4560;
-      --dim2: #cbe09c;
-      --text: #dde5eb;
+      --bg: #050d1a;
+      --surface: #0a1628;
+      --card: #0d1e35;
+      --border: #122240;
+      --border2: #1e3a5f;
+      --accent: #38bdf8;
+      --accent2: #818cf8;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --orange: #fb923c;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --purple: #a78bfa;
+      --dim: #1e3a5f;
+      --dim2: #94a3b8;
+      --text: #e0f2fe;
       --mono: 'Share Tech Mono', monospace;
       --ui: 'Exo 2', sans-serif;
     }
@@ -40,18 +40,19 @@
       padding: 0
     }
 
-    html,
-    body {
-      height: 100%;
-      overflow: hidden
+    html {
+      min-height: 100%;
+      overflow-y: auto;
     }
 
     body {
+      min-height: 100%;
+      overflow-y: auto;
       background: var(--bg);
       color: var(--text);
       font-family: var(--ui);
       display: flex;
-      flex-direction: column
+      flex-direction: column;
     }
 
     /* grid bg */
@@ -59,11 +60,11 @@
       content: '';
       position: fixed;
       inset: 0;
-      background-image: linear-gradient(rgba(0, 212, 255, .02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 212, 255, .02) 1px, transparent 1px);
+      background-image: linear-gradient(rgba(56, 189, 248, .025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56, 189, 248, .025) 1px, transparent 1px);
       background-size: 44px 44px;
       pointer-events: none;
-      z-index: 0
+      z-index: 0;
     }
 
     /* ── Header ── */
@@ -76,7 +77,7 @@
       justify-content: space-between;
       padding: 10px 20px;
       border-bottom: 1px solid var(--border2);
-      background: linear-gradient(180deg, #0d1a24 0%, transparent 100%);
+      background: linear-gradient(180deg, #071524 0%, transparent 100%);
     }
 
     .logo {
@@ -87,7 +88,7 @@
 
     .logo-bolt {
       font-size: 1.4rem;
-      fiGPRSr: drop-shadow(0 0 8px var(--accent))
+      filter: drop-shadow(0 0 8px var(--accent))
     }
 
     .logo h1 {
@@ -97,7 +98,7 @@
       letter-spacing: 4px;
       text-transform: uppercase;
       color: var(--accent);
-      text-shadow: 0 0 20px rgba(0, 212, 255, .5)
+      text-shadow: 0 0 20px rgba(56, 189, 248, .55)
     }
 
     .logo sub {
@@ -159,7 +160,7 @@
       padding: 4px 10px;
       border: 1px solid var(--border2);
       border-radius: 12px;
-      background: rgba(0, 153, 187, .08);
+      background: rgba(56, 189, 248, .08);
       cursor: pointer;
       transition: all .2s;
       font-family: var(--mono);
@@ -171,8 +172,8 @@
     }
 
     .mode-pill:hover {
-      background: rgba(0, 153, 187, .18);
-      border-color: var(--accent2);
+      background: rgba(56, 189, 248, .18);
+      border-color: var(--accent);
     }
 
     .mode-pill .mode-icon {
@@ -189,7 +190,7 @@
       inset: 0;
       z-index: 200;
       background: rgba(0, 0, 0, .65);
-      backdrop-fiGPRSr: blur(4px);
+      backdrop-filter: blur(4px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -260,10 +261,10 @@
     }
 
     .mode-opt.active {
-      background: rgba(0, 153, 187, .2);
+      background: rgba(56, 189, 248, .18);
       border-color: var(--accent);
       color: var(--accent);
-      box-shadow: 0 0 8px rgba(0, 153, 187, .3) inset;
+      box-shadow: 0 0 8px rgba(56, 189, 248, .25) inset;
     }
 
     .mode-opt .opt-glyph {
@@ -361,13 +362,11 @@
     main {
       position: relative;
       z-index: 1;
-      flex: 1;
-      min-height: 0;
       display: grid;
       grid-template-columns: 300px 1fr 220px 220px;
-      grid-template-rows: 1fr 200px;
-      gap: 10px;
-      padding: 10px;
+      grid-template-rows: minmax(500px, auto) minmax(220px, auto);
+      gap: 12px;
+      padding: 12px;
     }
 
     /* ── Cards ── */
@@ -566,7 +565,8 @@
       grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
       gap: 5px;
       overflow-y: auto;
-      height: calc(100% - 56px);
+      min-height: 280px;
+      max-height: 420px;
       padding-right: 4px;
     }
 
@@ -635,8 +635,8 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
-      height: 100%;
-      overflow-y: auto
+      min-height: 200px;
+      overflow-y: auto;
     }
 
     .temp-row {
@@ -928,7 +928,7 @@
     .exp-btn:hover {
       border-color: var(--accent);
       color: var(--accent);
-      background: rgba(0, 212, 255, .06);
+      background: rgba(56, 189, 248, .08);
     }
 
     .exp-btn-csv:hover {
@@ -947,12 +947,12 @@
     .info-icon {
       font-size: 14px;
       cursor: help;
-      fiGPRSr: grayscale(1) opacity(0.7);
+      filter: grayscale(1) opacity(0.7);
       transition: all 0.2s;
     }
 
     .info-wrap:hover .info-icon {
-      fiGPRSr: none opacity(1);
+      filter: none opacity(1);
     }
 
     .legend-tooltip {
@@ -1002,7 +1002,7 @@
       inset: 0;
       z-index: 100;
       background: rgba(6, 10, 13, .9);
-      backdrop-fiGPRSr: blur(6px);
+      backdrop-filter: blur(6px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1071,10 +1071,10 @@
     }
 
     .chart-btn:hover {
-      border-color: var(--accent2);
-      color: var(--accent2);
-      background: rgba(0, 153, 187, .1);
-      box-shadow: 0 0 12px rgba(0, 153, 187, .15);
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(56, 189, 248, .1);
+      box-shadow: 0 0 12px rgba(56, 189, 248, .15);
     }
 
     /* ── Temp Chart Modal ── */
@@ -1083,7 +1083,7 @@
       inset: 0;
       z-index: 200;
       background: rgba(6, 10, 13, .92);
-      backdrop-fiGPRSr: blur(10px);
+      backdrop-filter: blur(10px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1103,7 +1103,7 @@
       background: var(--card);
       border: 1px solid var(--border2);
       border-radius: 6px;
-      box-shadow: 0 8px 60px rgba(0, 0, 0, .6), 0 0 40px rgba(0, 153, 187, .08);
+      box-shadow: 0 8px 60px rgba(0, 0, 0, .6), 0 0 40px rgba(56, 189, 248, .08);
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -1238,9 +1238,13 @@
           <span class="opt-glyph">🔌</span>
           Serial
         </div>
-        <div class="mode-opt" data-mode="wifi">
+        <div class="mode-opt" data-mode="local">
           <span class="opt-glyph">📡</span>
-          WiFi&nbsp;AP
+          Local&nbsp;WiFi
+        </div>
+        <div class="mode-opt" data-mode="cloud">
+          <span class="opt-glyph">☁</span>
+          Cloud
         </div>
         <div class="mode-opt" data-mode="off">
           <span class="opt-glyph">⏻</span>
@@ -1267,12 +1271,16 @@
         </select>
       </div>
 
-      <div class="mode-section" id="wifi-section">
-        <label for="wifi-ip">ESP32 AP Address</label>
-        <input id="wifi-ip" type="text" value="192.168.4.1" />
-        <div class="mode-hint">First, join the "BAKO_SMU" WiFi network.</div>
-        <label for="wifi-port">TCP Port</label>
-        <input id="wifi-port" type="number" value="9000" min="1" max="65535" />
+      <div class="mode-section" id="local-section">
+        <div class="mode-hint">ESP32 connects to this machine over local WiFi. Make sure they are on the same network.</div>
+        <label for="local-port">Listen Port</label>
+        <input id="local-port" type="number" value="9000" min="1" max="65535" />
+      </div>
+
+      <div class="mode-section" id="cloud-section">
+        <div class="mode-hint">Dashboard connects directly to the cloud VPS. ESP32 must be online and connected to the VPS.</div>
+        <label for="cloud-ws">VPS WebSocket URL</label>
+        <input id="cloud-ws" type="text" value="ws://62.169.24.172:8787/ws/cloud" />
       </div>
 
       <div class="mode-actions">
@@ -1414,10 +1422,10 @@
       <div class="ext-body">
 
         <!-- DC Voltage -->
-        <div class="ext-section">DC Voltage</div>
+        <div class="ext-section">Voltages</div>
 
         <div class="ext-row">
-          <div class="ext-label">HV ISO <span style="color:var(--dim);font-size:.5rem">MOD1150-3</span></div>
+          <div class="ext-label">72V DC in <span style="color:var(--dim);font-size:.5rem">GPIO39</span></div>
           <div><span class="ext-value" id="hv-iso-val">—</span><span class="ext-unit">V</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="hv-iso-bar"></div>
@@ -1425,18 +1433,26 @@
         </div>
 
         <div class="ext-row">
-          <div class="ext-label">12 V AUX <span style="color:var(--dim);font-size:.5rem">C11A063</span></div>
+          <div class="ext-label">12V DC out <span style="color:var(--dim);font-size:.5rem">GPIO36</span></div>
           <div><span class="ext-value" id="aux12-val">—</span><span class="ext-unit">V</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="aux12-bar"></div>
           </div>
         </div>
 
+        <div class="ext-row">
+          <div class="ext-label">72V MPPT in <span style="color:var(--dim);font-size:.5rem">GPIO35</span></div>
+          <div><span class="ext-value" id="dcdc-t-val">—</span><span class="ext-unit">V</span></div>
+          <div class="ext-bar-wrap">
+            <div class="ext-bar" id="dcdc-t-bar"></div>
+          </div>
+        </div>
+
         <!-- MPPT Current -->
-        <div class="ext-section">MPPT Current</div>
+        <div class="ext-section">Currents</div>
 
         <div class="ext-row">
-          <div class="ext-label">CH1 <span style="color:var(--dim);font-size:.5rem">ACS712-5A</span></div>
+          <div class="ext-label">Current in <span style="color:var(--dim);font-size:.5rem">GPIO33</span></div>
           <div><span class="ext-value" id="mppt-i1-val">—</span><span class="ext-unit">A</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="mppt-i1-bar"></div>
@@ -1444,7 +1460,7 @@
         </div>
 
         <div class="ext-row">
-          <div class="ext-label">CH2 <span style="color:var(--dim);font-size:.5rem">ACS712-5A</span></div>
+          <div class="ext-label">Current out <span style="color:var(--dim);font-size:.5rem">GPIO32</span></div>
           <div><span class="ext-value" id="mppt-i2-val">—</span><span class="ext-unit">A</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="mppt-i2-bar"></div>
@@ -1455,7 +1471,7 @@
         <div class="ext-section">Temperatures</div>
 
         <div class="ext-row">
-          <div class="ext-label">Bat Surface 1 <span style="color:var(--dim);font-size:.5rem">DS18B20</span></div>
+          <div class="ext-label">MPPT Heatsink <span style="color:var(--dim);font-size:.5rem">DS18B20</span></div>
           <div><span class="ext-value" id="bat-t1-val">—</span><span class="ext-unit">°C</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="bat-t1-bar"></div>
@@ -1463,7 +1479,7 @@
         </div>
 
         <div class="ext-row">
-          <div class="ext-label">Bat Surface 2 <span style="color:var(--dim);font-size:.5rem">DS18B20</span></div>
+          <div class="ext-label">DC/DC Heatsink <span style="color:var(--dim);font-size:.5rem">DS18B20</span></div>
           <div><span class="ext-value" id="bat-t2-val">—</span><span class="ext-unit">°C</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="bat-t2-bar"></div>
@@ -1471,20 +1487,14 @@
         </div>
 
         <div class="ext-row">
-          <div class="ext-label">MPPT Heatsink <span style="color:var(--dim);font-size:.5rem">NTC 10K</span></div>
+          <div class="ext-label">Motor Temp <span style="color:var(--dim);font-size:.5rem">DS18B20</span></div>
           <div><span class="ext-value" id="mppt-t-val">—</span><span class="ext-unit">°C</span></div>
           <div class="ext-bar-wrap">
             <div class="ext-bar" id="mppt-t-bar"></div>
           </div>
         </div>
 
-        <div class="ext-row">
-          <div class="ext-label">DC-DC Heatsink <span style="color:var(--dim);font-size:.5rem">NTC 10K</span></div>
-          <div><span class="ext-value" id="dcdc-t-val">—</span><span class="ext-unit">°C</span></div>
-          <div class="ext-bar-wrap">
-            <div class="ext-bar" id="dcdc-t-bar"></div>
-          </div>
-        </div>
+
 
         <!-- Logic / Status -->
         <div class="ext-section">Status</div>
@@ -1604,8 +1614,8 @@
         ctx.fillStyle = '#2a4560';
         ctx.font = '13px "Share Tech Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.filGPRSxt('Collecting temperature data…', W / 2, H / 2);
-        ctx.filGPRSxt(`${tempHistory.length} point(s) so far`, W / 2, H / 2 + 22);
+        ctx.fillText('Collecting temperature data…', W / 2, H / 2);
+        ctx.fillText(`${tempHistory.length} point(s) so far`, W / 2, H / 2 + 22);
         if (tempChartOpen) tempChartRAF = requestAnimationFrame(() => setTimeout(drawTempChart, 500));
         return;
       }
@@ -1658,7 +1668,7 @@
         ctx.fillStyle = '#2a4560';
         ctx.font = '10px "Share Tech Mono", monospace';
         ctx.textAlign = 'right';
-        ctx.filGPRSxt(v.toFixed(1) + '°', pad.left - 6, y + 3);
+        ctx.fillText(v.toFixed(1) + '°', pad.left - 6, y + 3);
       }
 
       // X axis labels (time)
@@ -1679,18 +1689,18 @@
         else label = (t / 3600).toFixed(1) + 'h';
         ctx.fillStyle = '#2a4560';
         ctx.font = '10px "Share Tech Mono", monospace';
-        ctx.filGPRSxt(label, x, H - pad.bottom + 16);
+        ctx.fillText(label, x, H - pad.bottom + 16);
       }
 
       // Axis labels
       ctx.fillStyle = '#3a5a70';
       ctx.font = '10px "Exo 2", sans-serif';
       ctx.textAlign = 'center';
-      ctx.filGPRSxt('Time since connection', pad.left + gW / 2, H - 4);
+      ctx.fillText('Time since connection', pad.left + gW / 2, H - 4);
       ctx.save();
       ctx.translate(12, pad.top + gH / 2);
       ctx.rotate(-Math.PI / 2);
-      ctx.filGPRSxt('Temperature (°C)', 0, 0);
+      ctx.fillText('Temperature (°C)', 0, 0);
       ctx.restore();
 
       // Draw lines for each sensor
@@ -1767,7 +1777,7 @@
         ctx.fillStyle = color;
         ctx.font = 'bold 11px "Exo 2", sans-serif';
         ctx.textAlign = 'left';
-        ctx.filGPRSxt(last.temps[k].toFixed(1) + '°C', x + 10, y + 4);
+        ctx.fillText(last.temps[k].toFixed(1) + '°C', x + 10, y + 4);
       });
       if (last.avg != null) {
         const x = xOf(last.t);
@@ -2136,9 +2146,8 @@
       document.getElementById('frames-lbl').textContent = d.frame_count + ' frames';
       document.getElementById('port-lbl').textContent = d.port || '—';
 
-      // Mode pill — reflect server-reported active mode
       if (d.mode) {
-        const modeIcon = { serial: '🔌', wifi: '📡', off: '⏻' }[d.mode] || '⚡';
+        const modeIcon = { serial: '🔌', local: '📡', cloud: '☁', off: '⏻' }[d.mode] || '⚡';
         const modeName = (d.mode || '—').toUpperCase();
         const mi = document.getElementById('mode-icon');
         const mn = document.getElementById('mode-name');
@@ -2150,6 +2159,7 @@
       const lbl = document.getElementById('conn-lbl');
       if (d.connected) { dot.className = 'dot live'; lbl.textContent = 'Live'; }
       else if (d.mode === 'off') { dot.className = 'dot'; lbl.textContent = 'Disabled'; }
+      else if (d.mode === 'cloud') { dot.className = 'dot err'; lbl.textContent = 'Reconnecting…'; }
       else { dot.className = 'dot err'; lbl.textContent = 'Reconnecting…'; }
 
       // SOC ring
@@ -2276,17 +2286,19 @@
     const modeApply = document.getElementById('mode-apply');
     const modeOpts = document.querySelectorAll('.mode-opt');
     const serialSec = document.getElementById('serial-section');
-    const wifiSec = document.getElementById('wifi-section');
-    const portSelect = document.getElementById('serial-port');
-    const baudSelect = document.getElementById('serial-baud');
-    const wifiIp = document.getElementById('wifi-ip');
-    const wifiPort = document.getElementById('wifi-port');
+    const localSec  = document.getElementById('local-section');
+    const cloudSec  = document.getElementById('cloud-section');
+    const portSelect  = document.getElementById('serial-port');
+    const baudSelect  = document.getElementById('serial-baud');
+    const localPort   = document.getElementById('local-port');
+    const cloudWsInput = document.getElementById('cloud-ws');
 
     let selectedMode = 'serial';
 
     function showSection(mode) {
       serialSec.classList.toggle('show', mode === 'serial');
-      wifiSec.classList.toggle('show', mode === 'wifi');
+      localSec.classList.toggle('show',  mode === 'local');
+      cloudSec.classList.toggle('show',  mode === 'cloud');
     }
 
     function setActiveOpt(mode) {
@@ -2295,7 +2307,9 @@
       showSection(mode);
     }
 
-    modeOpts.forEach(o => o.addEventListener('click', () => setActiveOpt(o.dataset.mode)));
+    modeOpts.forEach(o => o.addEventListener('click', () => {
+      setActiveOpt(o.dataset.mode);
+    }));
 
     async function openModeModal() {
       try {
@@ -2313,15 +2327,10 @@
         });
 
         // Pre-fill values
-        if (cfg.serial) {
-          if (cfg.serial.baud) baudSelect.value = String(cfg.serial.baud);
-        }
-        if (cfg.wifi) {
-          if (cfg.wifi.esp_ip) wifiIp.value = cfg.wifi.esp_ip;
-          if (cfg.wifi.esp_port) wifiPort.value = cfg.wifi.esp_port;
-        }
-
-        // Disable serial option if pyserial isn't installed on the server
+        if (cfg.serial && cfg.serial.baud) baudSelect.value = String(cfg.serial.baud);
+        if (cfg.local && cfg.local.listen_port) localPort.value = cfg.local.listen_port;
+        if (cfg.cloud && cfg.cloud.ws_url) cloudWsInput.value = cfg.cloud.ws_url;
+        // Disable serial option if pyserial isn't installed
         const serialBtn = document.querySelector('.mode-opt[data-mode="serial"]');
         if (serialBtn) {
           if (cfg.serial_available === false) {
@@ -2338,6 +2347,7 @@
         setActiveOpt(cfg.mode || 'serial');
       } catch (e) {
         console.error('Could not load /api/mode', e);
+        setActiveOpt('serial');
       }
       modeModal.classList.add('open');
     }
@@ -2352,20 +2362,25 @@
     });
 
     modeApply.addEventListener('click', async () => {
+      modeApply.disabled = true;
+      modeApply.textContent = 'Switching…';
+
       const body = { mode: selectedMode };
       if (selectedMode === 'serial') {
         body.serial = {
           port: portSelect.value || null,
           baud: parseInt(baudSelect.value, 10) || 115200,
         };
-      } else if (selectedMode === 'wifi') {
-        body.wifi = {
-          esp_ip: wifiIp.value.trim() || '192.168.4.1',
-          esp_port: parseInt(wifiPort.value, 10) || 9000,
+      } else if (selectedMode === 'local') {
+        body.local = {
+          listen_host: '0.0.0.0',
+          listen_port: parseInt(localPort.value, 10) || 9000,
+        };
+      } else if (selectedMode === 'cloud') {
+        body.cloud = {
+          ws_url: cloudWsInput.value.trim() || 'ws://62.169.24.172:8787/ws/cloud',
         };
       }
-      modeApply.disabled = true;
-      modeApply.textContent = 'Switching…';
       try {
         const r = await fetch('/api/mode', {
           method: 'POST',
@@ -2377,6 +2392,7 @@
           alert('Mode switch failed: ' + (err.error || r.statusText));
         } else {
           closeModeModal();
+          if (ws) ws.close(); // reconnect to local server
         }
       } catch (e) {
         alert('Network error: ' + e.message);
@@ -2391,8 +2407,7 @@
     let ws, retryMs = 1000;
 
     function connect() {
-      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${wsProto}//${location.host}/ws`);
+      ws = new WebSocket(`ws://${location.host}/ws`);
       ws.onopen = () => { overlay.classList.add('hidden'); retryMs = 1000; };
       ws.onmessage = e => { try { update(JSON.parse(e.data)); } catch (err) { } };
       ws.onclose = ws.onerror = () => {
