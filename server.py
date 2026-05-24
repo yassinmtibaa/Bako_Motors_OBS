@@ -237,13 +237,16 @@ class ReaderManager:
             )
             self.thread.start()
         elif mode == "cloud":
-            ws_url = self.config["cloud"].get("ws_url", DEFAULT_CONFIG["cloud"]["ws_url"])
-            self.thread = threading.Thread(
-                target=cloud_reader_loop,
-                args=(ws_url, self.stop_event),
-                daemon=True,
-            )
-            self.thread.start()
+            ws_url = self.config["cloud"].get("ws_url", "")
+            if not ws_url:
+                print("[Cloud] No ws_url configured — ingest-only mode")
+            else:
+                self.thread = threading.Thread(
+                    target=cloud_reader_loop,
+                    args=(ws_url, self.stop_event),
+                    daemon=True,
+                )
+                self.thread.start()
         elif mode == "off":
             with state_lock:
                 state["connected"] = False
