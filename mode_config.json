@@ -1,7 +1,7 @@
 {
-  "mode": "serial",
+  "mode": "wifi",
   "serial": {
-    "port": "/tmp/bako_pty_server",
+    "port": "/dev/ttyUSB0",
     "baud": 115200
   },
   "wifi": {
