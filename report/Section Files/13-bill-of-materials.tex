@@ -1,0 +1,116 @@
+\section{Bill of Materials (BOM)}
+
+\subsection{Electronics BOM}
+
+Table~\ref{tab:electronics-bom} lists all electronic components required to populate one unit of the BAKO Motors ISS board. Unit prices are estimates based on local Tunisian market rates (TND) and online distributor quotes at the time of procurement.
+
+\begin{table}[H]
+\centering
+\caption{Electronics Bill of Materials}
+\label{tab:electronics-bom}
+\small
+\begin{tabular}{>{\bfseries}p{3.0cm} p{3.6cm} c r r l}
+\toprule
+Component & Description & Qty & Unit Price & Total & Source \\
+\midrule
+ESP32-DEVKITC    & Microcontroller                & 1  & \textasciitilde30 TND  & \textasciitilde30 TND  & Local \\
+MCP2515 module   & CAN controller SPI             & 3  & \textasciitilde5 TND   & \textasciitilde15 TND  & Local \\
+TJA1051T         & CAN transceiver                & 1  & \textasciitilde3 TND   & \textasciitilde3 TND   & Local \\
+SIM800L         & GPRS Cat-M1 module              & 1  & \textasciitilde80 TND  & \textasciitilde80 TND  & Online \\
+DS18B20          & 1-Wire temperature sensor      & 3  & \textasciitilde3 TND   & \textasciitilde9 TND   & Local \\
+ACS712 (30\,A)   & Hall-effect current sensor     & 2  & \textasciitilde5 TND   & \textasciitilde10 TND  & Local \\
+LM2596S-ADJ      & Adjustable buck regulator      & 1  & \textasciitilde4 TND   & \textasciitilde4 TND   & Local \\
+AMS1117-3.3      & 3.3\,V LDO regulator           & 1  & \textasciitilde1 TND   & \textasciitilde1 TND   & Local \\
+LM7805           & 5\,V linear regulator          & 1  & \textasciitilde1 TND   & \textasciitilde1 TND   & Local \\
+Resistors (misc) & Various values                 & 20 & \textasciitilde0.1 TND & \textasciitilde2 TND   & Local \\
+Capacitors (misc)& Various values                 & 10 & \textasciitilde0.5 TND & \textasciitilde5 TND   & Local \\
+Zener diodes     & ESD/overvoltage protection     & 3  & \textasciitilde1 TND   & \textasciitilde3 TND   & Local \\
+Fuses            & Overcurrent protection         & 3  & \textasciitilde1 TND   & \textasciitilde3 TND   & Local \\
+Connectors (misc)& JST and screw terminals        & 15 & \textasciitilde1 TND   & \textasciitilde15 TND  & Local \\
+PCB fabrication  & FR-4, 2-layer, 1.6\,mm         & 1  & \textasciitilde180 TND & \textasciitilde180 TND & Local fab \\
+\midrule
+\multicolumn{4}{r}{\textbf{Total Actual Cost (components + PCB)}} & \multicolumn{2}{l}{\textbf{\textasciitilde240 TND}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Mechanical \& Structural BOM}
+
+The mechanical and structural BOM covers the enclosure and mounting hardware for the ISS board. The enclosure design was not finalised within the scope of this academic prototype phase and is deferred to the next hardware revision. Provisional components include: a standard ABS or polycarbonate DIN-rail enclosure (approximately 150~TND), M3 standoffs and screws for PCB mounting (approximately 5~TND), and cable glands for harness entry points (approximately 10~TND). These items are not included in the electronics BOM total.
+
+\subsection{Battery \& Powertrain BOM}
+
+The BAKO Motors electric motorcycle powertrain (LiFePO4 battery pack, MPPT solar controller, three-phase motor controller, and DC/DC converter) was provided by BAKO Motors as the system under test. These components are outside the scope of the ISS project BOM and are not costed here.
+
+\subsection{Software \& Licensing BOM}
+
+All software tools and frameworks used in this project are open-source or free for academic use. No commercial software licences were required. Table~\ref{tab:software-bom} summarises the tools and their applicable licences.
+
+\begin{table}[H]
+\centering
+\caption{Software and Licensing Bill of Materials}
+\label{tab:software-bom}
+\begin{tabular}{>{\bfseries}p{4.0cm} p{6.0cm} l}
+\toprule
+Tool / Framework & Purpose & Licence \\
+\midrule
+ESP32 Arduino framework & Embedded firmware development & Apache 2.0 \\
+KiCad 10.0              & PCB schematic and layout      & GPL \\
+Python 3.11             & Emulator and FastAPI back-end & PSF \\
+FastAPI                 & REST API and WebSocket server & MIT \\
+SQLite                  & Cloud telemetry database      & Public Domain \\
+VS Code                 & Integrated development environment & MIT \\
+PlatformIO              & Build system and dependency management & Apache 2.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Total Project Cost Estimate}
+
+The hardware procurement cost of approximately 240~TND represents only the direct material expenditure and significantly understates the true economic value of the project. A complete project cost estimate must account for all resource categories: human effort, professional expertise, infrastructure, and equipment access.
+
+\subsubsection*{Human Resources --- Man-Day Estimate}
+
+The project team comprised seven students over one academic semester of approximately 18 weeks. Each team member contributed an estimated average of three effective working days per week during sprint weeks, yielding the following man-day calculation:
+
+\[
+7 \text{ members} \times 18 \text{ weeks} \times 3 \text{ effective days/week} = \mathbf{378 \text{ man-days}}
+\]
+
+Applying a conservative junior engineering day rate of 150~TND/day (consistent with Tunisian engineering graduate market rates), the human effort component alone represents approximately \textbf{56\,700~TND} in equivalent labour value.
+
+Academic supervision by Dr.\ Mortadha Dahmani added approximately 2 hours per week of expert guidance over 18 weeks, equivalent to 4.5 man-days of senior engineering supervision. At a senior expert daily rate of 500~TND/day, this contributes approximately \textbf{2\,250~TND} in supervisory expertise value.
+
+\subsubsection*{Infrastructure \& Equipment}
+
+\begin{itemize}
+    \item \textbf{MedTech FABLAB} --- Access to soldering stations, oscilloscopes, logic analysers, and 3D printers was provided at no charge to the team. The equivalent commercial lab rental cost for 18 weeks at 4 hours per week would be approximately 3\,600~TND at market rates (50~TND/hour).
+    \item \textbf{VPS cloud server} --- Provided by the academic supervisor at no charge to the project. The equivalent hosting cost for a comparable Linux VPS (2 vCPU, 4 GB RAM, public IP) over 6 months is approximately 360~TND.
+    \item \textbf{BAKO Motors test vehicle} --- Weekly access to the electric motorcycle prototype on the MedTech campus (approximately 4 hours/week, 12 sessions) represents a vehicle access value of approximately 1\,200~TND at commercial EV workshop rates.
+\end{itemize}
+
+\subsubsection*{Full Project Cost Summary}
+
+\begin{table}[H]
+\centering
+\caption{Full Project Cost Breakdown --- Material and Human Resources}
+\label{tab:project-cost}
+\begin{tabular}{>{\bfseries}p{5.5cm} r r}
+\toprule
+Cost Category & Quantity & Est. Value (TND) \\
+\midrule
+Electronics components     & 60 TND actual spend     & 60 \\
+PCB fabrication            & 180 TND actual spend    & 180 \\
+Student engineering effort & 378 man-days @ 150 TND  & 56\,700 \\
+Academic supervision       & 4.5 man-days @ 500 TND  & 2\,250 \\
+FABLAB equipment access    & 72 hours @ 50 TND/hr    & 3\,600 \\
+VPS cloud hosting          & 6 months                & 360 \\
+Vehicle access (BAKO)      & 12 sessions             & 1\,200 \\
+\midrule
+\textbf{Total project value} & & \textbf{\textasciitilde 64\,350 TND} \\
+\textbf{Direct cash spend}   & & \textbf{240 TND} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 240~TND direct spend represents less than 0.4\% of the total estimated project value, underscoring the significant contribution of academic infrastructure, supervisory expertise, and student engineering effort that made this project viable within a constrained budget. All software tools and development environments were open-source or free for academic use, contributing 0~TND to the software cost line.
