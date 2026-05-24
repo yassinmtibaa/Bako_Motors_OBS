@@ -18,8 +18,9 @@ New ESP32 sensor frames (SA=0xAA):
   0x18D301AA  DC/DC 12V output voltage
   0x18D401AA  Motor temperature (winding + housing)
   0x18D501AA  MPPT heatsink temperature
-  0x18D601AA  DC/DC heatsink temperature
+  0x18D601AA  DC/DC temperature
   0x18D701AA  Handbrake position
+  0x18D801AA  GNSS position + speed + fix
 
 REST API:
   GET  /          → dashboard (index.html)
@@ -28,9 +29,6 @@ REST API:
   WS   /ws        → 10 Hz JSON snapshot
 
 Requirements: pip install fastapi uvicorn pyserial
-
-ESP32 also serves a WebSocket on port 81 (direct browser connection);
-This server connects as TCP client to ESP32 port 9000 in wifi mode.
 """
 
 import asyncio, json, os, re, socket, threading, time, copy
@@ -38,7 +36,7 @@ from collections import deque
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -59,7 +57,7 @@ CONFIG_FILE = "mode_config.json"
 DEFAULT_CONFIG = {
     "mode": "serial",
     "serial": {"port": None, "baud": 115200},
-    "wifi":   {"listen_host": "0.0.0.0", "listen_port": 9000},
+    "wifi":   {"esp_ip": "192.168.4.1", "esp_port": 9000},
 }
 
 def load_config() -> dict:
@@ -95,7 +93,6 @@ state = {
     "soc_coulomb":    None,
     "soc_bms":        None,
     "pack_v":         None,
-    "pack_current":    None,   # A, positive = discharge
     "capacity_ah":    44.7,
     "capacity_rated": 50.0,
     "soh":            None,
@@ -123,15 +120,15 @@ state = {
         "hv_iso_v":  None,   # solar panel voltage (mapped to HV reference)
         "mppt_i1":   None,   # solar panel current (before MPPT)
         "mppt_i2":   None,   # MPPT output current (after MPPT, before battery)
-        "dcdc_t":    None,   # DC/DC heatsink temperature
         "bat_t2":    None,   # motor winding temperature
         "mppt_t":    None,   # MPPT heatsink temperature
-        "dcdc_t":    None,   # DC/DC heatsink temperature
+        "dcdc_t":    None,   # DC/DC temperature
         "handbrake": None,
     },
     "ext_thresh": {"mppt_max_a": 22.0},
 
     # New sensor detail fields (full resolution)
+    "pack_current_a":   None,   # pack current A (from 0x18FF28F4)
     "solar_v":          None,   # solar panel voltage V
     "solar_voc":        None,   # open-circuit voltage V
     "solar_i_raw":      None,   # solar current A
@@ -139,7 +136,7 @@ state = {
     "mppt_out_i":       None,   # MPPT output current A
     "mppt_mode":        None,   # 0=off 1=tracking 2=CV 3=float
     "mppt_efficiency":  None,   # % 0-100
-    "dcdc_v":           None,   # DC/DC output voltage V
+    "dcdc_v":           None,   # DC/DC 12V output voltage V
     "dcdc_i":           None,   # DC/DC output current A (None = not fitted)
     "dcdc_status":      None,
     "motor_t_winding":  None,   # motor winding temp °C
@@ -147,12 +144,12 @@ state = {
     "motor_t_status":   None,
     "mppt_t_raw":       None,   # MPPT heatsink temp °C
     "mppt_t_status":    None,
-    "dcdc_t":           None,   # DC/DC heatsink temp °C  (DS18B20 #2)
+    "dcdc_t_raw":       None,   # DC/DC temperature °C  (0x18D601AA)
     "dcdc_t_status":    None,
     "handbrake_raw":    None,   # 0=released 1=engaged 0xFF=fault
     "hb_debounce":      None,   # 0=stable 1=transitioning
 
-    # GNSS (for future use)
+    # GNSS
     "gnss": {"lat": None, "lon": None, "alt": None, "speed": None, "fix": 0},
 
     # Scenario info (from simulator firmware)
@@ -183,6 +180,10 @@ state = {
     "port":        "—",
     "frame_count": 0,
     "last_error":  "",
+
+    # Latest JSON push snapshot (populated every 2 minutes from firmware)
+    "latest_json_push":    None,
+    "latest_json_push_ts": None,
 }
 
 # SOC calibration constants (BAKO doc section 5.2)
@@ -250,22 +251,11 @@ class ReaderManager:
             )
             self.thread.start()
         elif mode == "wifi":
-            host = self.config["wifi"].get("listen_host", "0.0.0.0")
-            port = self.config["wifi"].get("listen_port", 9000)
+            ip   = self.config["wifi"]["esp_ip"]
+            port = self.config["wifi"]["esp_port"]
             self.thread = threading.Thread(
                 target=wifi_reader_loop,
-                args=(host, port, self.stop_event),
-                daemon=True,
-            )
-            self.thread.start()
-        elif mode == "ws":
-            # ws mode: listen for ESP32 WebSocket connection
-            # (currently handled via the ws_reader_loop)
-            ip      = self.config["wifi"].get("listen_host", "0.0.0.0")
-            ws_port = self.config["wifi"].get("listen_port", 81)
-            self.thread = threading.Thread(
-                target=ws_reader_loop,
-                args=(ip, ws_port, self.stop_event),
+                args=(ip, port, self.stop_event),
                 daemon=True,
             )
             self.thread.start()
@@ -376,12 +366,12 @@ def parse_can(id_hex: int, d: bytes) -> None:
         return
 
     # ── BMS: Basic Message 1 — 0x18FF28F4 ───────────────────────────────────
-    # d[0]: status bitfield
-    # d[1]: SOC % raw
-    # d[2-3]: pack current LE uint16, (raw-5000)×0.1 A  (+ = discharge)
-    # d[4-5]: pack voltage LE uint16, ×0.1 V
-    # d[6]: fault level
-    # d[7]: error code
+    # Byte 1: status bitfield
+    # Byte 2: SOC % (low byte, scale 1)
+    # Bytes 3-4: pack current LE uint16, offset -5000, scale 0.1 A/bit
+    # Bytes 5-6: pack voltage LE uint16, scale 0.1 V/bit
+    # Byte 7: fault level
+    # Byte 8: error code
     if id_hex == 0x18FF28F4 and len(d) >= 8:
         soc_raw = d[1]
         if 0 <= soc_raw <= 100:
@@ -391,7 +381,7 @@ def parse_can(id_hex: int, d: bytes) -> None:
 
         current_raw = u16le(d, 2)
         pack_current = round((current_raw - 5000) * 0.1, 1)   # A, + = discharge
-        state["pack_current"] = pack_current
+        state["pack_current_a"] = pack_current
 
         voltage_raw = u16le(d, 4)
         pack_voltage = round(voltage_raw * 0.1, 1)             # V
@@ -457,7 +447,7 @@ def parse_can(id_hex: int, d: bytes) -> None:
 
     # ── 0x18D001AA — Solar panel current (before MPPT) ───────────────────────
     # Bytes 1-2: LE uint16 raw current,  0.1 A/bit
-    # Bytes 3-4: LE uint16 filtered avg, 0.1 A/bit
+    # Bytes 3-4: LE uint16 fiGPRSred avg, 0.1 A/bit
     # Byte  5  : sensor status
     if id_hex == 0x18D001AA and len(d) >= 5:
         raw_i = round(u16le(d, 0) * 0.1, 2)
@@ -533,15 +523,14 @@ def parse_can(id_hex: int, d: bytes) -> None:
         state["ext"]["mppt_t"]  = t   # maps to MPPT heatsink display slot
         return
 
-    # ── 0x18D601AA — DC/DC heatsink temperature  ────────────────────────────
-    # Byte 0: DC/DC heatsink temp  (uint8, offset -40, 0xFF=NC)
-    # Byte 1: sensor status  (0x00 normal / 0x01 warning / 0x02 fault)
+    # ── 0x18D601AA — DC/DC temperature ──────────────────────────────────────
+    # Byte 1: DC/DC temp (uint8, offset -40)
+    # Byte 2: sensor status
     if id_hex == 0x18D601AA and len(d) >= 2:
-        t_dcdc_hs = decode_temp(d[0])
-        status    = d[1]
-        state["dcdc_t"]          = t_dcdc_hs
-        state["dcdc_t_status"]   = status
-        state["ext"]["dcdc_t"]   = t_dcdc_hs
+        t_dcdc = decode_temp(d[0])
+        state["dcdc_t_raw"]    = t_dcdc
+        state["dcdc_t_status"] = d[1]
+        state["ext"]["dcdc_t"] = t_dcdc
         return
 
     # ── 0x18D701AA — Handbrake position ──────────────────────────────────────
@@ -553,6 +542,22 @@ def parse_can(id_hex: int, d: bytes) -> None:
         state["handbrake_raw"]     = hb
         state["hb_debounce"]       = int(d[1])
         state["ext"]["handbrake"]  = hb
+        return
+
+    # ── 0x18D801AA — GNSS position + speed + fix ─────────────────────────────
+    # Bytes 0-3: latitude  LE int32, scale 1e-7 deg
+    # Bytes 4-5: speed_kmh LE uint16, scale 0.1 km/h
+    # Byte 6: fix (0=no fix, 1=fix)
+    if id_hex == 0x18D801AA and len(d) >= 7:
+        lat_raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
+        if lat_raw >= 0x80000000:      # sign-extend int32
+            lat_raw -= 0x100000000
+        lat   = round(lat_raw * 1e-7, 7)
+        speed = round(u16le(d, 4) * 0.1, 1)
+        fix   = int(d[6])
+        state["gnss"]["lat"]   = lat
+        state["gnss"]["speed"] = speed
+        state["gnss"]["fix"]   = fix
         return
 
 
@@ -586,7 +591,7 @@ def parse_sensor(line: str) -> None:
         state["mppt_t_raw"]       = f("mppt_t", 1)
         state["ext"]["mppt_t"]    = f("mppt_t", 1)
     if 'dcdc_t'      in kv:
-        state["dcdc_t"]           = f("dcdc_t", 1)
+        state["dcdc_t_raw"]       = f("dcdc_t", 1)
         state["ext"]["dcdc_t"]    = f("dcdc_t", 1)
     if 'handbrake'   in kv:
         state["handbrake_raw"]    = int(kv["handbrake"])
@@ -594,8 +599,8 @@ def parse_sensor(line: str) -> None:
     if 'hv64v'       in kv:
         state["ext"]["hv_iso_v"]  = f("hv64v")
 
-    if 'gnss_lat'    in kv: state["gnss"]["lat"]   = round(kv["gnss_lat"],   5)
-    if 'gnss_lon'    in kv: state["gnss"]["lon"]   = round(kv["gnss_lon"],   5)
+    if 'gnss_lat'    in kv: state["gnss"]["lat"]   = round(kv["gnss_lat"],   7)
+    if 'gnss_lon'    in kv: state["gnss"]["lon"]   = round(kv["gnss_lon"],   7)
     if 'gnss_alt'    in kv: state["gnss"]["alt"]   = round(kv["gnss_alt"],   1)
     if 'gnss_speed'  in kv: state["gnss"]["speed"] = round(kv["gnss_speed"], 1)
     if 'gnss_fix'    in kv: state["gnss"]["fix"]   = int(kv["gnss_fix"])
@@ -634,11 +639,18 @@ def process_line(line: str) -> None:
         id_hex = int(m.group(2), 16)
         data   = bytes(int(x, 16) for x in m.group(4).split())
         parse_can(id_hex, data)
+    elif line.startswith("JSON_PUSH:"):
+        # Store the raw JSON payload for the /api/latest_push REST endpoint
+        raw_json = line[len("JSON_PUSH:"):].strip()
+        try:
+            parsed = json.loads(raw_json)
+            state["latest_json_push"] = parsed
+            state["latest_json_push_ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        except Exception:
+            pass   # malformed JSON — ignore
     elif line.startswith("SENSOR:"):
         parse_sensor(line)
     elif line.startswith("[SIM]"):
-        # Capture scenario display name from simulator log header
-        # [SIM]  SCENARIO: 🏙  CITY DRIVE
         m2 = re.search(r'SCENARIO:\s+(.+)', line)
         if m2:
             state["scenario_name"] = m2.group(1).strip()
@@ -711,38 +723,21 @@ def serial_reader_loop(port_arg: Optional[str], baud: int, stop_event: threading
 # ─────────────────────────────────────────────────────────────────────────────
 #  WiFi reader
 # ─────────────────────────────────────────────────────────────────────────────
-def wifi_reader_loop(listen_host: str, listen_port: int, stop_event: threading.Event):
-    """TCP SERVER — listens for the ESP32 to connect and stream CAN frame lines."""
-    print(f"[WiFi] TCP server listening on {listen_host}:{listen_port}")
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        srv.bind((listen_host, listen_port))
-        srv.listen(1)
-        srv.settimeout(1.0)
-    except OSError as e:
-        with state_lock:
-            state["last_error"] = f"WiFi bind: {e}"
-        print(f"[WiFi] Bind failed: {e}")
-        return
-
-    with state_lock:
-        state["mode"] = "wifi"
-        state["port"] = f"{listen_host}:{listen_port}"
-
+def wifi_reader_loop(esp_ip: str, esp_port: int, stop_event: threading.Event):
+    print(f"[WiFi] Will connect to ESP32 at {esp_ip}:{esp_port}")
     while not stop_event.is_set():
         conn = None
         try:
-            try:
-                conn, addr = srv.accept()
-            except socket.timeout:
-                continue
-            print(f"[WiFi] ESP32 connected from {addr[0]}:{addr[1]}")
-            conn.settimeout(2.0)
+            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            conn.settimeout(4.0)
+            conn.connect((esp_ip, esp_port))
+            conn.settimeout(1.0)
             with state_lock:
                 state["connected"]  = True
+                state["mode"]       = "wifi"
+                state["port"]       = f"{esp_ip}:{esp_port}"
                 state["last_error"] = ""
-                state["port"]       = f"esp32@{addr[0]}:{listen_port}"
+            print(f"[WiFi] Connected to {esp_ip}:{esp_port}")
             buf = b""
             while not stop_event.is_set():
                 try:
@@ -750,7 +745,6 @@ def wifi_reader_loop(listen_host: str, listen_port: int, stop_event: threading.E
                 except socket.timeout:
                     continue
                 if not chunk:
-                    print("[WiFi] ESP32 disconnected")
                     break
                 buf += chunk
                 while b"\n" in buf:
@@ -760,76 +754,26 @@ def wifi_reader_loop(listen_host: str, listen_port: int, stop_event: threading.E
                         continue
                     with state_lock:
                         process_line(line)
+        except (OSError, socket.timeout) as e:
+            with state_lock:
+                state["connected"]  = False
+                state["last_error"] = f"WiFi: {e}"
+            print(f"[WiFi] {e} — retry in 2s")
+            if stop_event.wait(2.0): break
         except Exception as e:
             with state_lock:
+                state["connected"]  = False
                 state["last_error"] = f"WiFi: {e}"
             print(f"[WiFi] {e}")
+            if stop_event.wait(2.0): break
         finally:
-            if conn:
-                try: conn.close()
-                except Exception: pass
-            with state_lock:
-                state["connected"] = False
-
-    try: srv.close()
-    except Exception: pass
-    with state_lock:
-        state["connected"] = False
-    print("[WiFi] TCP server stopped")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  WebSocket reader (connects to ESP32 WS server on port 81)
-# ─────────────────────────────────────────────────────────────────────────────
-def ws_reader_loop(listen_host: str, listen_port: int, stop_event: threading.Event):
-    """Connect to ESP32 WebSocket server (ws://IP:81) and read frame lines."""
-    try:
-        import websockets
-        import asyncio as _asyncio
-
-        async def _run():
-            uri = f"ws://localhost:{listen_port}"
-            print(f"[WS-Reader] Connecting to {uri}")
-            async with websockets.connect(uri, ping_interval=5) as ws:
-                with state_lock:
-                    state["connected"]  = True
-                    state["mode"]       = "ws"
-                    state["port"]       = uri
-                    state["last_error"] = ""
-                while not stop_event.is_set():
-                    try:
-                        msg = await _asyncio.wait_for(ws.recv(), timeout=2.0)
-                        line = msg.strip()
-                        if line:
-                            with state_lock:
-                                process_line(line)
-                    except _asyncio.TimeoutError:
-                        continue
-                    except Exception as e:
-                        with state_lock:
-                            state["connected"]  = False
-                            state["last_error"] = f"WS-Reader: {e}"
-                        raise
-
-        while not stop_event.is_set():
             try:
-                loop = _asyncio.new_event_loop()
-                loop.run_until_complete(_run())
-            except Exception as e:
-                with state_lock:
-                    state["connected"]  = False
-                    state["last_error"] = f"WS-Reader: {e}"
-                print(f"[WS-Reader] {e} — retry in 2s")
-                if stop_event.wait(2.0):
-                    break
-    except ImportError:
-        with state_lock:
-            state["last_error"] = "websockets not installed: pip install websockets"
-        print("[WS-Reader] pip install websockets required for ws mode")
+                if conn: conn.close()
+            except Exception:
+                pass
     with state_lock:
         state["connected"] = False
-    print("[WS-Reader] stopped")
-
+    print("[WiFi] Reader stopped")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -859,7 +803,7 @@ async def get_mode():
 async def set_mode(req: ModeRequest):
     new_cfg = {}
     if req.mode is not None:
-        if req.mode not in ("serial", "wifi", "ws", "off"):
+        if req.mode not in ("serial", "wifi", "off"):
             return JSONResponse({"error": "mode must be serial|wifi|off"},
                                 status_code=400)
         new_cfg["mode"] = req.mode
@@ -871,6 +815,108 @@ async def set_mode(req: ModeRequest):
     cfg["available_ports"]  = list_serial_ports()
     cfg["serial_available"] = SERIAL_AVAILABLE
     return JSONResponse(cfg)
+
+@app.get("/api/latest_push")
+async def get_latest_push():
+    """Return the most recent JSON snapshot pushed by the firmware (every 2 min)."""
+    with state_lock:
+        payload = copy.deepcopy(state.get("latest_json_push"))
+        ts      = state.get("latest_json_push_ts")
+    if payload is None:
+        return JSONResponse({"error": "No JSON push received yet"}, status_code=404)
+    return JSONResponse({"received_at": ts, "data": payload})
+
+INGEST_API_KEY = os.environ.get("BMS_API_KEY", "bako-bms-2024")
+
+def _cell_status(mv: int, thresh: dict) -> str:
+    if mv is None:              return "nc"
+    if mv >= thresh["cell_ov"]: return "ov"
+    if mv <= thresh["cell_uv"]: return "uv"
+    if mv >= thresh["cell_full"]: return "full"
+    if mv >= thresh["cell_bal"]: return "ok"
+    return "low"
+
+@app.post("/hello")
+async def hello(request: Request):
+    body = await request.body()
+    text = body.decode("utf-8", errors="replace").strip()
+    print(f"[HELLO] {text}", flush=True)
+    return JSONResponse({"reply": f"Server received: {text}"})
+
+
+@app.post("/api/ingest")
+async def ingest(request: Request):
+    key = request.headers.get("X-Api-Key", "")
+    if key != INGEST_API_KEY:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        raw = await request.body()
+        print(f"[INGEST] body_len={len(raw)} first_bytes={raw[:40]!r}", flush=True)
+        payload = json.loads(raw)
+    except Exception as e:
+        raw_preview = raw[:120] if 'raw' in dir() else b''
+        print(f"[INGEST] bad json: {e!r}  body_preview={raw_preview!r}", flush=True)
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    bat   = payload.get("battery", {})
+    temps = payload.get("temperatures", {})
+
+    with state_lock:
+        thresh = state["thresh"]
+
+        state["pack_v"]         = bat.get("pack_v")
+        state["pack_current_a"] = bat.get("pack_current_a")
+        state["soc"]            = bat.get("soc")
+        state["soc_bms"]        = bat.get("soc_bms")
+        state["cell_count"]     = bat.get("cell_count", 0)
+        state["cell_avg_mv"]    = bat.get("cell_avg_mv")
+        state["cell_min_mv"]    = bat.get("cell_min_mv")
+        state["cell_max_mv"]    = bat.get("cell_max_mv")
+        state["cell_spread_mv"] = bat.get("cell_spread_mv")
+        state["disch_i_lim"]    = bat.get("max_disch_a")
+        state["fault_level"]    = payload.get("fault_level", 0)
+        state["error_code"]     = payload.get("error_code", 0)
+        state["frame_count"]    = payload.get("frame_count", 0)
+        state["connected"]      = payload.get("connected", True)
+        state["mode"]           = "cloud"
+        state["port"]           = payload.get("device_id", "replay")
+
+        charger = bat.get("charger", {})
+        state["chg_i_req"] = charger.get("max_charge_a")
+
+        # cells_arr format: [None, {mv, status}, {mv, status}, ...]
+        # position 0 is a null placeholder; positions 1-19 are the actual cells
+        cells_arr = bat.get("cells", [])
+        cells = {}
+        for idx, entry in enumerate(cells_arr):
+            if idx == 0 or entry is None:
+                continue
+            if isinstance(entry, dict):
+                mv = entry.get("mv")
+            else:
+                mv = entry  # plain integer fallback
+            if mv is not None:
+                cells[idx] = {"mv": mv, "status": _cell_status(mv, thresh)}
+        state["cells"] = cells
+
+        # battery_cells format: [None, temp1, temp2, ...]
+        # position 0 is a null placeholder; positions 1-4 are probe readings
+        bc = temps.get("battery_cells", [])
+        state["temps"] = {}
+        for idx, v in enumerate(bc):
+            if idx == 0 or v is None:
+                continue
+            state["temps"][idx] = v
+        state["avg_temp"] = temps.get("battery_avg_c")
+
+        state["latest_json_push"]    = payload
+        state["latest_json_push_ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+        log_buffer.append(f"[CLOUD] ingest seq={payload.get('seq','?')} "
+                          f"soc={state['soc']} pack_v={state['pack_v']}")
+
+    return JSONResponse({"ok": True})
+
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
@@ -893,7 +939,7 @@ def main():
     import argparse
     p = argparse.ArgumentParser(description="BAKO SMU Combined Server")
     p.add_argument("--host",     default="0.0.0.0")
-    p.add_argument("--web-port", default=8765, type=int, dest="web_port")
+    p.add_argument("--web-port", default=8787, type=int, dest="web_port")
     args = p.parse_args()
 
     reader_mgr.start()
@@ -906,10 +952,8 @@ def main():
         print(f"  Serial port : {cfg['serial']['port'] or 'auto-detect'}"
               f"  @ {cfg['serial']['baud']} baud")
     elif cfg["mode"] == "wifi":
-        host = cfg["wifi"].get("listen_host", "0.0.0.0")
-        port = cfg["wifi"].get("listen_port", 9000)
-        print(f"  TCP server  : {host}:{port}  (waiting for ESP32 to connect)")
-        print(f"  Set SERVER_IP={host if host != '0.0.0.0' else '<your LAN IP>'} in the ESP32 firmware")
+        print(f"  ESP32 WiFi  : {cfg['wifi']['esp_ip']}:{cfg['wifi']['esp_port']}")
+        print(f"  (Connect your PC to the 'BAKO_SMU' WiFi network first)")
     print(f"  Dashboard   : http://localhost:{args.web_port}")
     print("  Ctrl+C to stop")
     print("=" * 64)
